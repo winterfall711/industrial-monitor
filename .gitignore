@@ -1,0 +1,13 @@
+
+__pycache__/
+*.py[cod]
+../.venv/
+venv/
+.idea/
+.DS_Store
+
+# 忽略运行生成的数据
+data/*.csv
+
+# 保留 data 文件夹
+!data/.gitkeep
