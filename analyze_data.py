@@ -202,20 +202,47 @@ def main():
 
         continuous_alarms.append(trigger_row)
 
-        # 记录该次报警事件的信息
+
+
+        # 记录本次报警开始与最后一次超限时间
+        start_time = group.iloc[0]["timestamp"]
+        last_over_time = group.iloc[-1]["timestamp"]
+
+        # 在完整采样数据中查找报警后的第一个正常采样点
+        recovery_rows = detection_df.loc[
+            (detection_df["timestamp"] > last_over_time)
+            & (detection_df["torque"] <= TORQUE_LIMIT)
+            ].sort_values("timestamp")
+
+        if not recovery_rows.empty:
+            # 找到第一个恢复正常的采样点
+            end_time = recovery_rows.iloc[0]["timestamp"]
+
+            duration_seconds = (
+                    end_time - start_time
+            ).total_seconds()
+
+        else:
+            # 暂时没有恢复记录，不能伪造恢复时间
+            end_time = None
+
+            duration_seconds = (
+                    last_over_time - start_time
+            ).total_seconds()
+
+        # 生成报警事件
         event = {
-            "start_time": group.iloc[0]["timestamp"],
+            "start_time": start_time,
             "trigger_time": trigger_row["timestamp"],
-            "end_time": group.iloc[-1]["timestamp"],
+            "end_time": end_time,
             "sample_count": len(group),
             "max_torque": group["torque"].max(),
-            "duration_seconds": (
-                    group.iloc[-1]["timestamp"]
-                    - group.iloc[0]["timestamp"]
-            ).total_seconds(),
+            "duration_seconds": duration_seconds,
         }
 
         alarm_events.append(event)
+
+
 
     # =====================================
     # 输出报警事件统计报告
@@ -246,20 +273,117 @@ def main():
 
     ALARM_FILE = BASE_DIR / "data" / "alarm_events.csv"
 
-    if alarm_events:
-        event_report_df = pd.DataFrame(alarm_events)
+    # =====================================
+    # 保存报警事件历史，避免覆盖旧记录
+    # =====================================
 
-        event_report_df.to_csv(
+    # =====================================
+    # 保存报警历史与唯一事件 ID
+    # =====================================
+
+    if alarm_events:
+        new_events_df = pd.DataFrame(alarm_events)
+
+        # 读取已有历史
+        if ALARM_FILE.exists() and ALARM_FILE.stat().st_size > 0:
+            old_events_df = pd.read_csv(
+                ALARM_FILE,
+                encoding="utf-8-sig",
+            )
+        else:
+            old_events_df = pd.DataFrame()
+
+        # 合并新旧报警记录
+        all_events_df = pd.concat(
+            [old_events_df, new_events_df],
+            ignore_index=True,
+            sort=False,
+        )
+
+        # 统一时间格式
+        for column in [
+            "start_time",
+            "trigger_time",
+            "end_time",
+        ]:
+            if column in all_events_df.columns:
+                all_events_df[column] = pd.to_datetime(
+                    all_events_df[column],
+                    errors="coerce",
+                )
+
+        # 根据触发时间去重
+        # 沿用原有逻辑：同一触发时间保留最新记录
+        all_events_df["_trigger_key"] = (
+            all_events_df["trigger_time"]
+            .dt.strftime("%Y-%m-%d %H:%M:%S")
+        )
+
+        missing_trigger = all_events_df["trigger_time"].isna()
+
+        all_events_df.loc[
+            missing_trigger, "_trigger_key"
+        ] = [
+            f"UNKNOWN-{i}"
+            for i in all_events_df.index[missing_trigger]
+        ]
+
+        all_events_df = all_events_df.drop_duplicates(
+            subset=["_trigger_key"],
+            keep="last",
+        )
+
+        # 生成可读的报警事件 ID
+        def make_event_id(row):
+            trigger_time = row["trigger_time"]
+            start_time = row["start_time"]
+
+            if pd.isna(trigger_time):
+                return f"ALM-UNKNOWN-{row.name}"
+
+            start_id = (
+                start_time.strftime("%Y%m%d%H%M%S")
+                if pd.notna(start_time)
+                else "UNKNOWN"
+            )
+
+            trigger_id = trigger_time.strftime(
+                "%Y%m%d%H%M%S"
+            )
+
+            return f"ALM-{start_id}-{trigger_id}"
+
+        all_events_df["event_id"] = all_events_df.apply(
+            make_event_id,
+            axis=1,
+        )
+
+        # 按触发时间排序
+        all_events_df = all_events_df.sort_values(
+            "trigger_time",
+            ascending=True,
+            na_position="last",
+        )
+
+        # 删除内部辅助列
+        all_events_df = all_events_df.drop(
+            columns=["_trigger_key"]
+        )
+
+        # 保存完整历史
+        all_events_df.to_csv(
             ALARM_FILE,
             index=False,
             encoding="utf-8-sig",
         )
 
-        print(f"\n报警事件报告已保存：{ALARM_FILE}")
-        print(f"本次报告包含 {len(event_report_df)} 个事件。")
+        print(f"\n本次检测到 {len(new_events_df)} 个报警事件。")
+        print(f"报警历史已保存：{ALARM_FILE}")
+        print(f"历史记录总数：{len(all_events_df)}")
+        print("报警事件 ID 已生成。")
 
     else:
-        print("\n本次没有连续超限事件。")
+        print("\n本次没有连续超限事件，保留已有报警历史。")
 
     # =====================================
     # 5. 绘制扭矩趋势图
