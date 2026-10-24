@@ -1,8 +1,11 @@
 
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from modbus_client import read_equipment_data
+from modbus_client import (
+    read_equipment_data,
+    reconnect_client,
+)
 
 
 class TestReadEquipmentData(unittest.TestCase):
@@ -59,6 +62,35 @@ class TestReadEquipmentData(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "数据不足"):
             read_equipment_data(client)
 
+
+class TestReconnectClient(unittest.TestCase):
+
+    @patch("modbus_client.time.sleep")
+    def test_reconnect_after_connection_failure(
+        self,
+        mock_sleep,
+    ):
+        """第一次连接失败，第二次成功后应停止重试。"""
+
+        client = Mock()
+        client.connect.side_effect = [False, True]
+
+        reconnect_client(client)
+
+        # 旧连接应关闭一次
+        client.close.assert_called_once()
+
+        # 第一次失败，第二次成功
+        self.assertEqual(
+            client.connect.call_count,
+            2,
+        )
+
+        # 模拟等待，测试时不需要真的等待两秒
+        self.assertEqual(
+            mock_sleep.call_count,
+            2,
+        )
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
